@@ -1,60 +1,68 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import datetime
+import matplotlib.pyplot as plt
 
-st.title("📊 Screener Swing Trading Mingguan")
+st.set_page_config(page_title="Screener IHSG Swing Trading", layout="wide")
 
-# Input ticker saham
-tickers = st.text_area(
-    "Masukkan daftar kode saham (pisahkan dengan koma)",
-    "BBCA.JK,BBRI.JK,TLKM.JK,ASII.JK,UNVR.JK"
-).upper().split(",")
+# 1. Ambil daftar saham BEI langsung dari IDX
+@st.cache_data
+def get_list_saham():
+    url = "https://www.idx.co.id/data-pasar/data-saham/daftar-saham/"
+    tables = pd.read_html(url)
+    df_saham = tables[0]
+    df_saham.columns = df_saham.columns.str.strip()
+    tickers = [kode + ".JK" for kode in df_saham["Kode"]]
+    return tickers, df_saham
 
-# Parameter EMA
-ema_short = st.number_input("EMA Pendek (hari)", min_value=3, max_value=20, value=5)
-ema_long = st.number_input("EMA Panjang (hari)", min_value=10, max_value=50, value=20)
+tickers, df_listed = get_list_saham()
 
-# Ambil data 3 bulan terakhir (supaya cukup data untuk MA)
-end_date = datetime.date.today()
-start_date = end_date - datetime.timedelta(days=90)
-
-data_list = []
-
-for ticker in tickers:
-    ticker = ticker.strip()
+# 2. Fungsi ambil data dari yfinance & analisis crossover EMA5 > MA20
+def analyze_ticker(ticker):
     try:
-        df = yf.download(ticker, start=start_date, end=end_date, interval="1d", progress=False)
-        if df.empty:
-            continue
+        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+        if df.empty or len(df) < 20:
+            return None
+        df["EMA5"] = df["Close"].ewm(span=5, adjust=False).mean()
+        df["MA20"] = df["Close"].rolling(window=20).mean()
+        last, prev = df.iloc[-1], df.iloc[-2]
+        signal = (last["EMA5"] > last["MA20"]) and (prev["EMA5"] <= prev["MA20"])
+        return {
+            "Ticker": ticker,
+            "Signal": "BUY" if signal else "HOLD",
+            "df": df
+        }
+    except:
+        return None
 
-        # Hitung EMA
-        df["EMA_Short"] = df["Close"].ewm(span=ema_short, adjust=False).mean()
-        df["EMA_Long"] = df["Close"].ewm(span=ema_long, adjust=False).mean()
+st.title("📊 Screener Swing Trading IHSG (EMA5 vs MA20)")
 
-        # Sinyal swing trading: EMA pendek memotong EMA panjang dari bawah
-        # Cek hanya baris terakhir
-        ema_cross_up = (
-            df["EMA_Short"].iloc[-1] > df["EMA_Long"].iloc[-1] and
-            df["EMA_Short"].iloc[-2] <= df["EMA_Long"].iloc[-2]
-        )
+if st.button("🔍 Jalankan Screener"):
+    results = []
+    progress = st.progress(0)
+    for i, t in enumerate(tickers):
+        res = analyze_ticker(t)
+        if res:
+            results.append(res)
+        progress.progress((i + 1) / len(tickers))
+    
+    # Filter BUY saja
+    buy_list = [r for r in results if r["Signal"] == "BUY"]
 
-        if ema_cross_up:
-            data_list.append({
-                "Ticker": ticker,
-                "Close": round(df["Close"].iloc[-1], 2),
-                f"EMA_{ema_short}": round(df["EMA_Short"].iloc[-1], 2),
-                f"EMA_{ema_long}": round(df["EMA_Long"].iloc[-1], 2),
-                "Sinyal": "Buy"
-            })
-    except Exception as e:
-        st.write(f"Error {ticker}: {e}")
+    if buy_list:
+        st.subheader(f"📈 {len(buy_list)} Saham Sinyal BUY Minggu Ini")
+        df_res = pd.DataFrame([{"Ticker": r["Ticker"], "Signal": r["Signal"]} for r in buy_list])
+        st.dataframe(df_res)
 
-# Tampilkan hasil
-if data_list:
-    result_df = pd.DataFrame(data_list)
-    st.dataframe(result_df)
-else:
-    st.warning("Tidak ada saham yang memenuhi kriteria.")
+        for r in buy_list:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(r["df"].index, r["df"]["Close"], label="Close", color="blue")
+            ax.plot(r["df"].index, r["df"]["EMA5"], label="EMA5", color="green")
+            ax.plot(r["df"].index, r["df"]["MA20"], label="MA20", color="red")
+            ax.set_title(r["Ticker"])
+            ax.legend()
+            st.pyplot(fig)
+    else:
+        st.warning("Tidak ada saham yang memenuhi sinyal BUY minggu ini.")
 
+st.caption("Data diambil real-time dari Yahoo Finance (.JK) & daftar saham IDX")
