@@ -1,35 +1,30 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
+# Fungsi menghitung perubahan volume 5 hari vs 20 hari
 def volume_change_5d(volume):
-    """
-    Menghitung persentase perubahan volume dari 20 hari yang lalu ke 5 hari yang lalu.
-    """
     if len(volume) < 20:
-        return np.nan  # Data tidak cukup
+        return np.nan
     prev20 = volume.iloc[-20]
     if prev20 == 0 or np.isnan(prev20):
         return np.nan
     return (volume.iloc[-5] - prev20) / prev20
 
+# Fungsi analisis per saham
 def analyze_ticker(ticker):
-    """
-    Mengambil data dari Yahoo Finance dan menghitung sinyal swing trading.
-    """
     try:
         df = yf.download(ticker, period="6mo", interval="1d")
         if df.empty:
             return None
 
-        # Moving Average
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['EMA5'] = df['Close'].ewm(span=5).mean()
 
-        # Volume Change 5D
         vol_change = volume_change_5d(df['Volume'])
 
-        # Sinyal Buy Swing
         last_close = df['Close'].iloc[-1]
         last_ma20 = df['MA20'].iloc[-1]
         last_ema5 = df['EMA5'].iloc[-1]
@@ -38,19 +33,49 @@ def analyze_ticker(ticker):
 
         return {
             "Ticker": ticker,
-            "Last Close": last_close,
-            "EMA5": last_ema5,
-            "MA20": last_ma20,
-            "Vol Change 5D": vol_change,
-            "Swing Signal": signal
+            "Data": df,
+            "Last Close": round(last_close, 2),
+            "EMA5": round(last_ema5, 2),
+            "MA20": round(last_ma20, 2),
+            "Vol Change 5D (%)": round(vol_change * 100, 2) if pd.notna(vol_change) else np.nan,
+            "Swing Signal": "✅ BUY" if signal else "❌ HOLD"
         }
 
     except Exception as e:
-        print(f"Error {ticker}: {e}")
+        st.error(f"Error {ticker}: {e}")
         return None
 
-# Contoh penggunaan
-tickers = ["BBCA.JK", "BMRI.JK", "TLKM.JK"]
-results = [analyze_ticker(t) for t in tickers]
-df_results = pd.DataFrame([r for r in results if r is not None])
-print(df_results)
+# Fungsi untuk plot chart
+def plot_chart(df, ticker):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df.index, df['Close'], label='Close Price', color='blue', linewidth=1)
+    ax.plot(df.index, df['EMA5'], label='EMA5', color='orange', linewidth=1.2)
+    ax.plot(df.index, df['MA20'], label='MA20', color='green', linewidth=1.2)
+    ax.set_title(f"{ticker} - EMA5 & MA20", fontsize=14)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+    st.pyplot(fig)
+
+# UI Streamlit
+st.title("📊 Swing Trading Screener + Chart - Weekly (yfinance)")
+
+default_tickers = "BBCA.JK, BMRI.JK, TLKM.JK, BBRI.JK, ASII.JK"
+ticker_input = st.text_area("Masukkan daftar saham (pisahkan dengan koma)", default_tickers)
+
+if st.button("Jalankan Screener"):
+    tickers = [t.strip() for t in ticker_input.split(",") if t.strip()]
+    results = [analyze_ticker(t) for t in tickers]
+    results = [r for r in results if r is not None]
+    
+    if results:
+        df_results = pd.DataFrame([{k: v for k, v in r.items() if k != "Data"} for r in results])
+        st.dataframe(df_results, use_container_width=True)
+        
+        # Tampilkan chart per saham
+        for r in results:
+            st.subheader(f"📈 Chart {r['Ticker']}")
+            plot_chart(r["Data"], r["Ticker"])
+    else:
+        st.warning("Tidak ada data yang sesuai kriteria.")
